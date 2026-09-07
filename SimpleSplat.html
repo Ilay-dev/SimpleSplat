@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SimpleSplat viewer</title>
+    
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background: #000; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            overflow: hidden; 
+        }
+        
+        #viewer-container {
+            width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 1;
+        }
+
+        #ui-container {
+            position: absolute; top: 20px; left: 20px; z-index: 10;
+            background: rgba(30, 30, 30, 0.6);
+            backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+            padding: 15px; border-radius: 12px; color: white;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+            min-width: 200px;
+        }
+
+        button {
+            background: rgba(255, 255, 255, 0.9); color: #000;
+            border: none; padding: 10px 15px; border-radius: 8px;
+            cursor: pointer; font-size: 14px; font-weight: 600;
+            width: 100%; transition: background 0.2s;
+        }
+        button:hover { background: #fff; }
+
+        #recent-container { display: none; margin-top: 15px; }
+        #recent-container h3 {
+            font-size: 11px; color: #ccc; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .recent-list { list-style: none; padding: 0; margin: 0; }
+        .recent-item {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 8px 12px; margin-bottom: 6px;
+            border-radius: 6px; cursor: pointer;
+            font-size: 13px; font-weight: 500;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            transition: background 0.2s;
+        }
+        .recent-item:hover { background: rgba(255, 255, 255, 0.2); }
+
+        #loading {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7); z-index: 20; color: white;
+            display: none; justify-content: center; align-items: center;
+            font-size: 18px; font-weight: 500; backdrop-filter: blur(5px);
+        }
+    </style>
+
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.157.0/build/three.module.js",
+        "@mkkellogg/gaussian-splats-3d": "https://unpkg.com/@mkkellogg/gaussian-splats-3d/build/gaussian-splats-3d.module.js"
+      }
+    }
+    </script>
+</head>
+<body>
+
+    <div id="ui-container">
+        <button id="import-btn">Import File (.ply / .splat)</button>
+        <input type="file" id="file-input" accept=".ply,.splat" style="display: none;" />
+        
+        <div id="recent-container">
+            <h3>Recent</h3>
+            <ul id="recent-list" class="recent-list"></ul>
+        </div>
+    </div>
+
+    <div id="loading">Loading & rendering model...</div>
+    <div id="viewer-container"></div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
+
+        // --- 1. LOCAL STORAGE (IndexedDB) ---
+        const DB_NAME = 'SplatViewerDB';
+        
+        function initDB() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(DB_NAME, 1);
+                req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('recentMeta')) db.createObjectStore('recentMeta', { keyPath: 'id' });
+                    if (!db.objectStoreNames.contains('recentBlobs')) db.createObjectStore('recentBlobs', { keyPath: 'id' });
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function getRecentMeta() {
+            const db = await initDB();
+            return new Promise((resolve) => {
+                const tx = db.transaction('recentMeta', 'readonly');
+                const req = tx.objectStore('recentMeta').getAll();
+                req.onsuccess = () => resolve(req.result.sort((a, b) => b.date - a.date));
+            });
+        }
+
+        async function getFileBlob(id) {
+            const db = await initDB();
+            return new Promise((resolve) => {
+                const tx = db.transaction('recentBlobs', 'readonly');
+                const req = tx.objectStore('recentBlobs').get(id);
+                req.onsuccess = () => resolve(req.result ? req.result.file : null);
+            });
+        }
+
+        async function deleteFile(id) {
+            const db = await initDB();
+            return new Promise((resolve) => {
+                const tx = db.transaction(['recentMeta', 'recentBlobs'], 'readwrite');
+                tx.objectStore('recentMeta').delete(id);
+                tx.objectStore('recentBlobs').delete(id);
+                tx.oncomplete = resolve;
+            });
+        }
+
+        async function saveFileToRecent(file) {
+            const db = await initDB();
+            const files = await getRecentMeta();
+            
+            // Keep max 3 files to save space
+            if (files.length >= 3) {
+                for (let i = 2; i < files.length; i++) await deleteFile(files[i].id);
+            }
+            
+            const id = Date.now().toString();
+            return new Promise((resolve) => {
+                const tx = db.transaction(['recentMeta', 'recentBlobs'], 'readwrite');
+                tx.objectStore('recentMeta').put({ id, name: file.name, date: Date.now() });
+                tx.objectStore('recentBlobs').put({ id, file: file });
+                tx.oncomplete = () => resolve();
+                tx.onerror = (e) => {
+                    console.warn("Could not cache file locally.", e);
+                    resolve(); 
+                };
+            });
+        }
+
+        // --- 2. UI LOGIC ---
+        async function updateRecentUI() {
+            const files = await getRecentMeta();
+            const container = document.getElementById('recent-container');
+            const list = document.getElementById('recent-list');
+            
+            if (files.length === 0) {
+                container.style.display = 'none';
+                return;
+            }
+            
+            container.style.display = 'block';
+            list.innerHTML = '';
+            
+            files.forEach(f => {
+                const li = document.createElement('li');
+                li.className = 'recent-item';
+                li.textContent = f.name;
+                li.onclick = async () => {
+                    document.getElementById('loading').style.display = 'flex';
+                    const file = await getFileBlob(f.id);
+                    if (file) loadSplat(file);
+                    else alert("File could not be found in cache anymore.");
+                };
+                list.appendChild(li);
+            });
+        }
+
+        document.getElementById('import-btn').addEventListener('click', () => {
+            document.getElementById('file-input').click();
+        });
+
+        document.getElementById('file-input').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            document.getElementById('loading').style.display = 'flex';
+            
+            await saveFileToRecent(file);
+            await updateRecentUI();
+            
+            loadSplat(file);
+            e.target.value = ''; 
+        });
+
+
+        // --- 3. VIEWER LOGIC ---
+        let currentViewer = null;
+        let currentUrl = null;
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        async function loadSplat(file) {
+            const loadingUI = document.getElementById('loading');
+            
+            if (currentViewer) {
+                try { await currentViewer.dispose(); } catch(e) {}
+                document.getElementById('viewer-container').innerHTML = '';
+            }
+            if (currentUrl) URL.revokeObjectURL(currentUrl);
+            
+            currentUrl = URL.createObjectURL(file);
+            const formatNum = file.name.toLowerCase().endsWith('.splat') ? 0 : 2;
+            
+            currentViewer = new GaussianSplats3D.Viewer({
+                rootElement: document.getElementById('viewer-container'),
+                useBuiltInControls: true, 
+                sharedMemoryForWorkers: false 
+            });
+
+            try {
+                await currentViewer.addSplatScene(currentUrl, {
+                    format: formatNum,
+                    showLoadingUI: true,
+                    // Fix upside-down model: Rotate 180 degrees around X-Axis (Quaternion [X, Y, Z, W])
+                    rotation: [1, 0, 0, 0] 
+                });
+                currentViewer.start();
+            } catch(e) {
+                console.error("Error loading splat:", e);
+                alert("The splat file could not be rendered.");
+            } finally {
+                loadingUI.style.display = 'none';
+            }
+        }
+
+        // --- 4. CLICK-TO-ROTATE (Raycasting pivot point) ---
+        window.addEventListener('pointerdown', (event) => {
+            // Only fire on primary click/touch and if viewer is fully loaded
+            if (!event.isPrimary || !currentViewer || !currentViewer.cameraControls) return;
+            
+            // Ignore if clicking on UI
+            if (event.target.closest('#ui-container')) return;
+
+            // Convert mouse position to normalized device coordinates (-1 to +1)
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            // Compute raycast from camera
+            raycaster.setFromCamera(mouse, currentViewer.camera);
+            
+            // Safely fetch all possible meshes the library might use
+            const objectsToIntersect = [];
+            if (currentViewer.splatMesh) objectsToIntersect.push(currentViewer.splatMesh);
+            if (currentViewer.splatMeshes) objectsToIntersect.push(...currentViewer.splatMeshes);
+            if (objectsToIntersect.length === 0 && currentViewer.threeScene) objectsToIntersect.push(...currentViewer.threeScene.children);
+
+            const intersects = raycaster.intersectObjects(objectsToIntersect, true);
+
+            // If we hit a point on the gaussian splat:
+            if (intersects.length > 0) {
+                const hitPoint = intersects[0].point;
+                
+                // Shift camera position so the pivot change feels seamless
+                const delta = new THREE.Vector3().subVectors(hitPoint, currentViewer.cameraControls.target);
+                currentViewer.camera.position.add(delta);
+                
+                // Set the exact clicked point as the new center of rotation
+                currentViewer.cameraControls.target.copy(hitPoint);
+                currentViewer.cameraControls.update();
+            }
+        });
+
+        // Init
+        updateRecentUI();
+
+    </script>
+</body>
+</html>
