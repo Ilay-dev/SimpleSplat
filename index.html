@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>SimpleSplat viewer</title>
+    <title>SimpleSplat Viewer</title>
     
     <style>
         body, html {
@@ -16,23 +16,51 @@
             width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 1;
         }
 
+        /* --- UI Container --- */
         #ui-container {
             position: absolute; top: 20px; left: 20px; z-index: 10;
             background: rgba(30, 30, 30, 0.6);
             backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-            padding: 15px; border-radius: 12px; color: white;
+            padding: 35px 15px 15px 15px; /* Extra Platz oben für das X */
+            border-radius: 12px; color: white;
             box-shadow: 0 4px 16px rgba(0,0,0,0.3);
             min-width: 200px;
         }
 
-        button {
+        /* --- Buttons --- */
+        #import-btn {
             background: rgba(255, 255, 255, 0.9); color: #000;
             border: none; padding: 10px 15px; border-radius: 8px;
             cursor: pointer; font-size: 14px; font-weight: 600;
             width: 100%; transition: background 0.2s;
         }
-        button:hover { background: #fff; }
+        #import-btn:hover { background: #fff; }
 
+        /* Schließen-Button (X) */
+        #ui-close-btn {
+            position: absolute; top: 8px; right: 10px;
+            background: none; border: none; color: #aaa;
+            font-size: 16px; font-weight: bold; cursor: pointer;
+            padding: 0; transition: color 0.2s;
+        }
+        #ui-close-btn:hover { color: #fff; }
+
+        /* Kleiner Icon-Button um UI wieder anzuzeigen */
+        #ui-show-btn {
+            position: absolute; top: 20px; left: 20px; z-index: 10;
+            background: rgba(30, 30, 30, 0.6);
+            backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+            border: none; border-radius: 50%; color: white;
+            width: 44px; height: 44px; cursor: pointer;
+            display: none; /* Standardmäßig versteckt */
+            align-items: center; justify-content: center;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+            transition: background 0.2s;
+        }
+        #ui-show-btn:hover { background: rgba(60, 60, 60, 0.8); }
+        #ui-show-btn svg { width: 20px; height: 20px; }
+
+        /* --- Recent Files --- */
         #recent-container { display: none; margin-top: 15px; }
         #recent-container h3 {
             font-size: 11px; color: #ccc; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;
@@ -67,7 +95,19 @@
 </head>
 <body>
 
+    <!-- Kleiner Icon Button zum Öffnen der UI -->
+    <button id="ui-show-btn" title="Open Menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+    </button>
+
+    <!-- Haupt UI Container -->
     <div id="ui-container">
+        <button id="ui-close-btn" title="Close Menu">✕</button>
+        
         <button id="import-btn">Import File (.ply / .splat)</button>
         <input type="file" id="file-input" accept=".ply,.splat" style="display: none;" />
         
@@ -132,7 +172,6 @@
             const db = await initDB();
             const files = await getRecentMeta();
             
-            // Keep max 3 files to save space
             if (files.length >= 3) {
                 for (let i = 2; i < files.length; i++) await deleteFile(files[i].id);
             }
@@ -151,6 +190,21 @@
         }
 
         // --- 2. UI LOGIC ---
+        const uiContainer = document.getElementById('ui-container');
+        const uiShowBtn = document.getElementById('ui-show-btn');
+        const uiCloseBtn = document.getElementById('ui-close-btn');
+
+        // UI Ein-/Ausblenden
+        uiCloseBtn.addEventListener('click', () => {
+            uiContainer.style.display = 'none';
+            uiShowBtn.style.display = 'flex';
+        });
+
+        uiShowBtn.addEventListener('click', () => {
+            uiShowBtn.style.display = 'none';
+            uiContainer.style.display = 'block';
+        });
+
         async function updateRecentUI() {
             const files = await getRecentMeta();
             const container = document.getElementById('recent-container');
@@ -195,7 +249,6 @@
             e.target.value = ''; 
         });
 
-
         // --- 3. VIEWER LOGIC ---
         let currentViewer = null;
         let currentUrl = null;
@@ -224,10 +277,13 @@
                 await currentViewer.addSplatScene(currentUrl, {
                     format: formatNum,
                     showLoadingUI: true,
-                    // Fix upside-down model: Rotate 180 degrees around X-Axis (Quaternion [X, Y, Z, W])
                     rotation: [1, 0, 0, 0] 
                 });
                 currentViewer.start();
+                
+                // Optional: UI automatisch ausblenden, nachdem eine Datei erfolgreich geladen wurde
+                // uiCloseBtn.click();
+                
             } catch(e) {
                 console.error("Error loading splat:", e);
                 alert("The splat file could not be rendered.");
@@ -238,20 +294,16 @@
 
         // --- 4. CLICK-TO-ROTATE (Raycasting pivot point) ---
         window.addEventListener('pointerdown', (event) => {
-            // Only fire on primary click/touch and if viewer is fully loaded
             if (!event.isPrimary || !currentViewer || !currentViewer.cameraControls) return;
             
-            // Ignore if clicking on UI
-            if (event.target.closest('#ui-container')) return;
+            // Verhindere Raycasting, wenn auf das UI-Fenster ODER den runden Menü-Button geklickt wird
+            if (event.target.closest('#ui-container') || event.target.closest('#ui-show-btn')) return;
 
-            // Convert mouse position to normalized device coordinates (-1 to +1)
             mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
             mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
-            // Compute raycast from camera
             raycaster.setFromCamera(mouse, currentViewer.camera);
             
-            // Safely fetch all possible meshes the library might use
             const objectsToIntersect = [];
             if (currentViewer.splatMesh) objectsToIntersect.push(currentViewer.splatMesh);
             if (currentViewer.splatMeshes) objectsToIntersect.push(...currentViewer.splatMeshes);
@@ -259,15 +311,10 @@
 
             const intersects = raycaster.intersectObjects(objectsToIntersect, true);
 
-            // If we hit a point on the gaussian splat:
             if (intersects.length > 0) {
                 const hitPoint = intersects[0].point;
-                
-                // Shift camera position so the pivot change feels seamless
                 const delta = new THREE.Vector3().subVectors(hitPoint, currentViewer.cameraControls.target);
                 currentViewer.camera.position.add(delta);
-                
-                // Set the exact clicked point as the new center of rotation
                 currentViewer.cameraControls.target.copy(hitPoint);
                 currentViewer.cameraControls.update();
             }
